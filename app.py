@@ -25,7 +25,7 @@ st.caption("Ask questions about any YouTube video using RAG (Retrieval-Augmented
 def fetch_transcript(video_id):
     """Fetch transcript for a given YouTube video ID."""
     try:
-        fetched = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+        fetched = YouTubeTranscriptApi.fetch(video_id, languages=['en'])
         transcript = " ".join(chunk['text'] for chunk in fetched)
         return transcript
     except TranscriptsDisabled:
