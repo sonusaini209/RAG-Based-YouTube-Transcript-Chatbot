@@ -125,7 +125,7 @@ if video_url:
                     st.write(doc.page_content)
                     st.divider()
 
- else:
+    else:
         st.warning(" Could not fetch transcript. Try another video.")
 else:
     st.info(" Enter a YouTube link or video ID to begin.")
