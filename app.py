@@ -59,8 +59,9 @@ if video_url:
         transcript = fetch_transcript(video_id)
 
     if transcript:
+        # ==============================
         # SPLIT TEXT
-       
+        # ==============================
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         texts = text_splitter.create_documents([transcript])
 
