@@ -22,19 +22,13 @@ st.title("YouTube Video QA Assistant")
 st.caption("Ask questions about any YouTube video using RAG (Retrieval-Augmented Generation)")
 
 # FUNCTIONS
+
 def fetch_transcript(video_id):
-    """Fetch transcript for a given YouTube video ID."""
-    try:
-        fetched = YouTubeTranscriptApi.fetch(video_id, languages=['en'])
-        transcript = " ".join(chunk['text'] for chunk in fetched)
-        return transcript
-    except TranscriptsDisabled:
-        st.error("Transcripts are disabled for this video.")
-    except NoTranscriptFound:
-        st.error("No English transcript found for this video.")
-    except Exception as e:
-        st.error(f"Error fetching transcript: {str(e)}")
-    return None
+    ytt_api = YouTubeTranscriptApi()
+    fetched_transcript =ytt_api.fetch(video_id)
+    # Flatten it to plain text
+    transcript = " ".join(chunk.text for chunk in fetched_transcript)
+    return transcript
 
 
 def format_docs(retrieved_docs):
@@ -59,9 +53,9 @@ if video_url:
         transcript = fetch_transcript(video_id)
 
     if transcript:
-        # ==============================
+      
         # SPLIT TEXT
-        # ==============================
+ 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         texts = text_splitter.create_documents([transcript])
 
