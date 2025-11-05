@@ -1,11 +1,9 @@
 import os
 import re
-import tempfile
 import streamlit as st
 from dotenv import load_dotenv
 
-# LangChain imports
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
@@ -13,114 +11,98 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 
+# --- Streamlit UI ---
+st.set_page_config(page_title="YouTube RAG QA", layout="wide")
+st.title("YouTube Video QA Assistant")
+st.caption("Ask any question about a YouTube video using RAG")
+
 # LOAD ENV VARIABLES
 load_dotenv()
 
-# STREAMLIT CONFIG
-st.set_page_config(page_title="YouTube RAG QA", layout="wide")
-st.title("YouTube Video QA Assistant")
-st.caption("Ask questions about any YouTube video using RAG (Retrieval-Augmented Generation)")
-
-# FUNCTIONS
-def fetch_transcript(video_id):
-    try:
-        ytt_api = YouTubeTranscriptApi()
-        fetched_transcript = ytt_api.fetch(video_id)
-        return " ".join(chunk['text'] for chunk in fetched_transcript)
-    except Exception:
-        return ""
-
-
-def format_docs(retrieved_docs):
-    """Combine text chunks for RAG context."""
-    return "\n\n".join(doc.page_content for doc in retrieved_docs)
-
-
-# STREAMLIT UI
-video_url = st.text_input("Enter YouTube Video URL or ID:")
-query = st.text_input("Ask a question about the video:")
-debug_mode = st.toggle("Debug Mode (Show retrieved chunks)", value=False)
-
-if video_url:
-    # Extract video ID robustly (works for direct ID and all URL formats)
-    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_url)
+# Utility: Robust YouTube video ID extraction
+def extract_video_id(url_or_id):
+    # Direct ID pass-through
+    if re.fullmatch(r"[0-9A-Za-z_-]{11}", url_or_id):
+        return url_or_id
+    # Find ID in a YouTube link
+    match = re.search(r"(?:v=|\/|embed\/|watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})", url_or_id)
     if match:
-        video_id = match.group(1)
-    elif re.fullmatch(r"[0-9A-Za-z_-]{11}", video_url):
-        video_id = video_url
-    else:
+        return match.group(1)
+    return None  # Could not extract
+
+# Video input accepts URL or ID
+video_input = st.text_input("Enter YouTube video URL or ID:")
+query = st.text_input("Ask a question about the video:")
+
+if video_input:
+    video_id = extract_video_id(video_input)
+    if not video_id:
         st.warning("Could not extract a YouTube video ID from your input.")
         st.stop()
 
     with st.spinner("Fetching transcript..."):
-        transcript = fetch_transcript(video_id)
+        try:
+            ytt_api = YouTubeTranscriptApi()
+            fetched_transcript = ytt_api.fetch(video_id)
+            transcript = " ".join(chunk.text for chunk in fetched_transcript)
+        except TranscriptsDisabled:
+            transcript = ""
+            st.warning("Transcript disabled for this video.")
+        except Exception as e:
+            transcript = ""
+            st.warning(f"Transcript fetch failed: {e}")
 
     if transcript:
-        # SPLIT TEXT, handle empty string or empty docs error
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = text_splitter.create_documents([transcript])
-        if not texts or all(len(doc.page_content.strip()) == 0 for doc in texts):
-            st.warning("Transcript was empty after splitting. Try a different video.")
-            st.stop()
+        # Split transcript into chunks for RAG
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.create_documents([transcript])
+        # Embeddings & vectorstore from .env key
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        vector_store = FAISS.from_documents(chunks, embeddings)
+        retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
-        # CREATE EMBEDDINGS & VECTORSTORE (include API key from environment)
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            st.error("OpenAI API key missing! Please configure your .env file.")
-            st.stop()
-
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
-        vectorstore = FAISS.from_documents(texts, embeddings)
-        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
-
-        # DEFINE PROMPT + LLM (pass API key to LLM)
+        # Prompt & LLM
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
         prompt = PromptTemplate(
             template="""
-You are a helpful AI assistant.
-Use ONLY the following context to answer the question.
-If the answer cannot be found in the context, say "I don’t know."
+You are a helpful assistant.
+Answer ONLY from the provided transcript context.
+If the context is insufficient, just say you don't know.
 
-Context:
 {context}
-
 Question: {question}
-
-Answer:
 """,
-            input_variables=["context", "question"]
+            input_variables=['context', 'question']
         )
-
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-
-        # BUILD RAG CHAIN
+        def format_docs(retrieved_docs):
+            context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+            return context_text
         parallel_chain = RunnableParallel({
-            "context": retriever | RunnableLambda(format_docs),
-            "question": RunnablePassthrough()
+            'context': retriever | RunnableLambda(format_docs),
+            'question': RunnablePassthrough()
         })
-
         parser = StrOutputParser()
         main_chain = parallel_chain | prompt | llm | parser
 
-        st.success("Document processed successfully!")
+        st.success("Transcript indexed and model ready!")
 
-        # HANDLE USER QUERY
+        # Query interface
         if query:
-            with st.spinner("Thinking..."):
+            with st.spinner("Answering..."):
                 answer = main_chain.invoke(query)
             st.markdown("### Answer:")
             st.write(answer.strip())
 
-            # Optional Debug Mode (show context chunks)
-            if debug_mode:
-                st.divider()
-                st.markdown("### Retrieved Context (Debug Info)")
+            # Toggle for debug info
+            if st.toggle("Show context chunks"):
                 context_docs = retriever.invoke(query)
+                st.markdown("### Retrieved Chunks")
                 for i, doc in enumerate(context_docs, start=1):
                     st.markdown(f"**Chunk {i}:**")
                     st.code(doc.page_content)
                     st.divider()
-
     else:
-        st.warning("Could not fetch transcript. Try another video.")
+        st.warning("No transcript found for this video.")
 else:
-    st.info("Enter a YouTube link or video ID to begin.")
+    st.info("Enter a YouTube video URL or video ID to begin.")
+
