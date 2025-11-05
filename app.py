@@ -42,42 +42,51 @@ query = st.text_input("Ask a question about the video:")
 debug_mode = st.toggle("Debug Mode (Show retrieved chunks)", value=False)
 
 if video_url:
-    # Extract video ID if a full link is provided
-    if "youtube.com" in video_url or "youtu.be" in video_url:
-        match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_url)
-        video_id = match.group(1) if match else video_url
-    else:
+    # Extract video ID robustly (works for direct ID and all URL formats)
+    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", video_url)
+    if match:
+        video_id = match.group(1)
+    elif re.fullmatch(r"[0-9A-Za-z_-]{11}", video_url):
         video_id = video_url
+    else:
+        st.warning("Could not extract a YouTube video ID from your input.")
+        st.stop()
 
     with st.spinner("Fetching transcript..."):
         transcript = fetch_transcript(video_id)
 
     if transcript:
-      
-        # SPLIT TEXT
- 
+        # SPLIT TEXT, handle empty string or empty docs error
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         texts = text_splitter.create_documents([transcript])
+        if not texts or all(len(doc.page_content.strip()) == 0 for doc in texts):
+            st.warning("Transcript was empty after splitting. Try a different video.")
+            st.stop()
 
-        # CREATE EMBEDDINGS & VECTORSTORE
-        embeddings = OpenAIEmbeddings()
+        # CREATE EMBEDDINGS & VECTORSTORE (include API key from environment)
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            st.error("OpenAI API key missing! Please configure your .env file.")
+            st.stop()
+
+        embeddings = OpenAIEmbeddings(openai_api_key=openai_key)
         vectorstore = FAISS.from_documents(texts, embeddings)
         retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
-        # DEFINE PROMPT + LLM
+        # DEFINE PROMPT + LLM (pass API key to LLM)
         prompt = PromptTemplate(
             template="""
-            You are a helpful AI assistant.
-            Use ONLY the following context to answer the question.
-            If the answer cannot be found in the context, say "I don’t know."
+You are a helpful AI assistant.
+Use ONLY the following context to answer the question.
+If the answer cannot be found in the context, say "I don’t know."
 
-            Context:
-            {context}
+Context:
+{context}
 
-            Question: {question}
+Question: {question}
 
-            Answer:
-            """,
+Answer:
+""",
             input_variables=["context", "question"]
         )
 
@@ -98,18 +107,17 @@ if video_url:
         if query:
             with st.spinner("Thinking..."):
                 answer = main_chain.invoke(query)
-
             st.markdown("### Answer:")
             st.write(answer.strip())
 
-            # Optional Debug Mode
+            # Optional Debug Mode (show context chunks)
             if debug_mode:
                 st.divider()
                 st.markdown("### Retrieved Context (Debug Info)")
                 context_docs = retriever.invoke(query)
                 for i, doc in enumerate(context_docs, start=1):
                     st.markdown(f"**Chunk {i}:**")
-                    st.write(doc.page_content)
+                    st.code(doc.page_content)
                     st.divider()
 
     else:
