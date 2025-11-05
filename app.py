@@ -22,13 +22,13 @@ st.title("YouTube Video QA Assistant")
 st.caption("Ask questions about any YouTube video using RAG (Retrieval-Augmented Generation)")
 
 # FUNCTIONS
-
 def fetch_transcript(video_id):
-    ytt_api = YouTubeTranscriptApi()
-    fetched_transcript =ytt_api.fetch(video_id)
-    # Flatten it to plain text
-    transcript = " ".join(chunk.text for chunk in fetched_transcript)
-    return transcript
+    try:
+        ytt_api = YouTubeTranscriptApi()
+        fetched_transcript = ytt_api.fetch(video_id)
+        return " ".join(chunk['text'] for chunk in fetched_transcript)
+    except Exception:
+        return ""
 
 
 def format_docs(retrieved_docs):
